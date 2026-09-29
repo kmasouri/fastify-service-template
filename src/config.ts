@@ -1,0 +1,71 @@
+import { z } from 'zod';
+
+if (process.env.ENVIRONMENT === 'local') {
+  try {
+    process.loadEnvFile();
+  } catch (error) {
+    if (!isMissingEnvFileError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isMissingEnvFileError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+// Every environment variable the service reads is declared here. Parsing fails fast at startup
+// with a readable message instead of letting a bad value (such as PORT=abc) become NaN later.
+const envSchema = z.object({
+  ENVIRONMENT: z.string().min(1).default('production'),
+  HOST: z.string().min(1).default('0.0.0.0'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_HOST: z.string().min(1).default('localhost'),
+  DATABASE_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
+  DATABASE_NAME: z.string().min(1).default('fastify_service_template'),
+  DATABASE_USER: z.string().min(1).default('fastify_service_template'),
+  DATABASE_PASSWORD: z.string().default('fastify_service_template'),
+  LOGGER_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('info'),
+  REQUEST_ID_HEADER: z.string().min(1).default('x-request-id')
+});
+
+export type Env = z.infer<typeof envSchema>;
+
+export function parseEnv(source: NodeJS.ProcessEnv): Env {
+  const result = envSchema.safeParse(source);
+  if (!result.success) {
+    throw new Error(`Invalid environment configuration:\n${z.prettifyError(result.error)}`);
+  }
+
+  return result.data;
+}
+
+const env = parseEnv(process.env);
+
+export const config = {
+  ENVIRONMENT: env.ENVIRONMENT,
+  HOST: env.HOST,
+  PORT: env.PORT,
+  DATABASE: getDatabaseConfig(env),
+  LOGGER_LEVEL: env.LOGGER_LEVEL,
+  REQUEST_ID_HEADER: env.REQUEST_ID_HEADER
+};
+
+function getDatabaseConfig(env: Env) {
+  if (env.DATABASE_URL) {
+    return {
+      connectionString: env.DATABASE_URL
+    };
+  }
+
+  return {
+    host: env.DATABASE_HOST,
+    port: env.DATABASE_PORT,
+    database: env.DATABASE_NAME,
+    user: env.DATABASE_USER,
+    password: env.DATABASE_PASSWORD
+  };
+}
