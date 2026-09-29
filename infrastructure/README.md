@@ -34,7 +34,7 @@ Before `terraform apply`, set `service_container_image` in `terraform.tfvars` to
 
 Database settings are passed as plain ECS task environment variables through `service_environment_variables`. Move secrets to a proper secret store (Secrets Manager or SSM Parameter Store) before treating this as anything beyond a test stack.
 
-The GitHub release workflow expects the ECS task definition to use the ECR `:latest` tag. Each semantic release is pushed with both its version tag and `latest`, then ECS is forced to start new tasks.
+The GitHub release workflow expects the ECS task definition to use the ECR `:latest` tag. Each published GitHub release is pushed with both its version tag and `latest`, then ECS is forced to start new tasks.
 
 After apply, copy these outputs into the GitHub `sandbox` environment:
 

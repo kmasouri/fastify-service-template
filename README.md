@@ -1,6 +1,6 @@
 # Fastify Service Template
 
-Layered Fastify/TypeScript service template with Zod validation, Postgres, Swagger, Docker, AWS ECS infrastructure, and semantic-release CI.
+Layered Fastify/TypeScript service template with Zod validation, Postgres, Swagger, Docker, AWS ECS infrastructure, and GitHub Actions for CI and deploys.
 
 ## What you get
 
@@ -13,7 +13,7 @@ Layered Fastify/TypeScript service template with Zod validation, Postgres, Swagg
 - **Tests** with Jest that don't need a database.
 - **Dockerfile** with a multi-stage build that runs as a non-root user.
 - **Terraform** for a disposable AWS environment: VPC, ALB, ECR, ECS Fargate, and a GitHub OIDC deploy role.
-- **GitHub Actions** for CI, Release Please semantic versioning, and deploys to ECS.
+- **GitHub Actions** for CI, and deploys to ECS when you publish a GitHub release.
 
 <!-- template-only:start -->
 
@@ -22,12 +22,13 @@ Layered Fastify/TypeScript service template with Zod validation, Postgres, Swagg
 1. Create a repo from this template. Use GitHub's **Use this template** button, or the `new-project` agent skill, which also renames everything.
 2. If you copied it by hand, replace these names:
 
-   | Find                       | Replace with                           | Where                                                                     |
-   | -------------------------- | -------------------------------------- | ------------------------------------------------------------------------- |
-   | `fastify-service-template` | your service name (kebab-case)         | `package.json`, `package-lock.json`, `release-please-config.json`, tfvars |
-   | `Fastify Service Template` | your service title                     | `README.md`, `src/app.ts`                                                 |
-   | `fastify_service_template` | your Postgres schema name (snake_case) | `db/schema/`, `src/data/`, `src/config.ts`, `.env.example`                |
-   | `fastify-svc`              | a short AWS name prefix                | `infrastructure/`                                                         |
+   | Find                       | Replace with                           | Where                                                      |
+   | -------------------------- | -------------------------------------- | ---------------------------------------------------------- |
+   | `fastify-service-template` | your service name (kebab-case)         | `package.json`, `package-lock.json`, tfvars                |
+   | `Fastify Service Template` | your service title                     | `README.md`, `src/app.ts`                                  |
+   | `fastify_service_template` | your Postgres schema name (snake_case) | `db/schema/`, `src/data/`, `src/config.ts`, `.env.example` |
+   | `fastify-svc`              | a short AWS name prefix                | `infrastructure/`                                          |
+   | `@kmasouri`                | your GitHub user or team               | `.github/CODEOWNERS`                                       |
 
 3. Build your domain by following `docs/adding-a-feature.md`. Delete the `items` example when you no longer need it.
 
@@ -77,7 +78,7 @@ npm run test:coverage
 npm run build          # compiles to dist/
 npm run lint
 npm run format
-npm run check          # lint + build + test (what CI runs)
+npm run check          # lint + typecheck + build + test (what CI runs)
 ```
 
 ## Docker
@@ -99,7 +100,7 @@ docker run --rm -p 3000:3000 -e DATABASE_URL=postgres://... fastify-service-temp
 
 - `docs/architecture.md`: the layers, Zod setup, plugins, logging, errors, and tests.
 - `docs/adding-a-feature.md`: a step-by-step checklist for new endpoints.
-- `AGENTS.md`: the same rules, written for AI coding agents. `CLAUDE.md` imports it.
+- `AGENTS.md`: the same rules, written for AI coding agents.
 
 ## Infrastructure
 
@@ -107,23 +108,22 @@ The `infrastructure/` folder contains Terraform for a disposable AWS test enviro
 
 ## Releases and deployment
 
-GitHub Actions uses semantic versioning through Release Please:
+To release and deploy a new version:
 
-- merge `fix:` commits for patch releases
-- merge `feat:` commits for minor releases
-- merge commits with `!` or a `BREAKING CHANGE:` footer for major releases
+1. In GitHub, go to **Releases** and click **Draft a new release**.
+2. Create a new tag such as `v1.2.0`. Click **Generate release notes** if you want GitHub to list the merged pull requests.
+3. Click **Publish release**.
 
-The release workflow opens and maintains a release PR from conventional commits. Merging that PR creates a GitHub release, then builds the image and deploys that version to the `sandbox` ECS service.
+Publishing starts the `release` workflow. It builds the Docker image, tags it with the version (`1.2.0`) and `latest`, and deploys it to the `sandbox` ECS service.
 
 Required GitHub environment configuration for `sandbox`:
 
-| Name                   | Kind     | Description                                                        |
-| ---------------------- | -------- | ------------------------------------------------------------------ |
-| `AWS_ROLE_TO_ASSUME`   | secret   | IAM role ARN that GitHub Actions assumes through OIDC.             |
-| `RELEASE_PLEASE_TOKEN` | secret   | Optional PAT used when release PRs should trigger other workflows. |
-| `AWS_REGION`           | variable | AWS region containing the ECR and ECS resources.                   |
-| `ECR_REPOSITORY`       | variable | ECR repository name, such as `fastify-svc-sandbox-service`.        |
-| `ECS_CLUSTER`          | variable | ECS cluster name, such as `fastify-svc-sandbox-cluster`.           |
-| `ECS_SERVICE`          | variable | ECS service name, such as `fastify-svc-sandbox-service`.           |
+| Name                 | Kind     | Description                                                 |
+| -------------------- | -------- | ----------------------------------------------------------- |
+| `AWS_ROLE_TO_ASSUME` | secret   | IAM role ARN that GitHub Actions assumes through OIDC.      |
+| `AWS_REGION`         | variable | AWS region containing the ECR and ECS resources.            |
+| `ECR_REPOSITORY`     | variable | ECR repository name, such as `fastify-svc-sandbox-service`. |
+| `ECS_CLUSTER`        | variable | ECS cluster name, such as `fastify-svc-sandbox-cluster`.    |
+| `ECS_SERVICE`        | variable | ECS service name, such as `fastify-svc-sandbox-service`.    |
 
 The manual `deploy` workflow redeploys an image tag that is already pushed, without creating a new release.

@@ -6,23 +6,20 @@ import { ItemService } from '../services/items';
 
 declare module 'fastify' {
   interface FastifyInstance {
-    itemLogger: ItemLogger;
     itemRepository: ItemRepository;
     itemService: ItemService;
   }
 }
 
 const itemPlugin: FastifyPluginAsync = async (fastify) => {
-  const itemLogger = new ItemLogger();
   const itemRepository = new ItemPostgresRepository(fastify.pg);
-  const itemService = new ItemService(itemRepository);
+  const itemService = new ItemService(itemRepository, new ItemLogger(fastify.log));
 
-  fastify.decorate('itemLogger', itemLogger);
   fastify.decorate('itemRepository', itemRepository);
   fastify.decorate('itemService', itemService);
 };
 
 export default fp(itemPlugin, {
   name: 'item',
-  dependencies: ['@fastify/postgres']
+  dependencies: ['@fastify/postgres', '@fastify/request-context']
 });

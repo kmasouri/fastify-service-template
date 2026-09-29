@@ -1,9 +1,13 @@
 import { ItemRepository } from '../../data';
+import { ItemLogger } from '../../observability';
 import { ConflictError, NotFoundError } from '../../shared/errors';
 import { Item } from '../../shared/types';
 
 export class ItemService {
-  constructor(private readonly itemRepository: ItemRepository) {}
+  constructor(
+    private readonly itemRepository: ItemRepository,
+    private readonly itemLogger: ItemLogger
+  ) {}
 
   async createItem(input: {
     name: string;
@@ -15,15 +19,19 @@ export class ItemService {
       throw new ConflictError(`Item ${input.name} already exists`);
     }
 
-    return this.itemRepository.create({
+    const item = await this.itemRepository.create({
       name: input.name,
       description: input.description ?? null,
       metadata: input.metadata ?? {}
     });
+    this.itemLogger.onItemCreated();
+    return item;
   }
 
-  listItems(input: { limit: number; offset: number }): Promise<Item[]> {
-    return this.itemRepository.list(input);
+  async listItems(input: { limit: number; offset: number }): Promise<Item[]> {
+    const items = await this.itemRepository.list(input);
+    this.itemLogger.onItemListed();
+    return items;
   }
 
   async getItem(itemId: string): Promise<Item> {
@@ -32,6 +40,7 @@ export class ItemService {
       throw new NotFoundError(`Item ${itemId} was not found`);
     }
 
+    this.itemLogger.onItemFetched();
     return item;
   }
 }

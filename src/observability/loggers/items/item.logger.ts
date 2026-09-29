@@ -1,15 +1,18 @@
 import { FastifyBaseLogger } from 'fastify';
+import { currentLogger } from '../request-logger';
 
 export class ItemLogger {
-  onItemCreated(logger: FastifyBaseLogger): void {
-    logger.info({ event: 'item.created' }, 'item created');
+  constructor(private readonly logger: FastifyBaseLogger) {}
+
+  onItemCreated(): void {
+    currentLogger(this.logger).info({ event: 'item.created' }, 'item created');
   }
 
-  onItemListed(logger: FastifyBaseLogger): void {
-    logger.info({ event: 'item.listed' }, 'items listed');
+  onItemListed(): void {
+    currentLogger(this.logger).info({ event: 'item.listed' }, 'items listed');
   }
 
-  onItemFetched(logger: FastifyBaseLogger): void {
-    logger.info({ event: 'item.fetched' }, 'item fetched');
+  onItemFetched(): void {
+    currentLogger(this.logger).info({ event: 'item.fetched' }, 'item fetched');
   }
 }

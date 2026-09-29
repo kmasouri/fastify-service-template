@@ -38,14 +38,13 @@ Create these files under `src/data/orders/`:
 
 - `order.repository.ts`: the `OrderRepository` interface plus its input types.
 - `order-postgres.repository.ts`: `OrderPostgresRepository`, which holds the SQL, an `OrderRow` interface, and a private `toOrder(row)` mapper.
-- `in-memory-order.repository.test-helper.ts`: `InMemoryOrderRepository`, for service tests.
-- `index.ts`: re-exports the interface and the Postgres class (not the test helper).
+- `index.ts`: re-exports the interface and the Postgres class.
 
 Then add `export * from './orders';` to `src/data/index.ts`.
 
 ## 4. Service
 
-Create `src/services/orders/order.service.ts` with an `OrderService` class. Its constructor takes repositories only; services never receive Fastify objects. It enforces business rules and throws `NotFoundError`, `ConflictError`, or `ValidationError`.
+Create `src/services/orders/order.service.ts` with an `OrderService` class. Its constructor takes repositories and its logger; services never receive Fastify objects. It enforces business rules and throws `NotFoundError`, `ConflictError`, or `ValidationError`.
 
 A service can depend on another domain's repository, for example to check that an item exists:
 
@@ -56,17 +55,23 @@ constructor(
 ) {}
 ```
 
-Add `index.ts`, and add `order.service.test.ts` using the in-memory repositories.
+Add `index.ts`, and add `order.service.test.ts` with the repositories mocked (see `item.service.test.ts`).
 
 ## 5. Logger
 
-Create `src/observability/loggers/orders/order.logger.ts` with one method per event:
+Create `src/observability/loggers/orders/order.logger.ts` with one method per event. Copy `item.logger.ts`:
 
 ```ts
-onOrderCreated(logger: FastifyBaseLogger): void {
-  logger.info({ event: 'order.created' }, 'order created');
+export class OrderLogger {
+  constructor(private readonly logger: FastifyBaseLogger) {}
+
+  onOrderCreated(): void {
+    currentLogger(this.logger).info({ event: 'order.created' }, 'order created');
+  }
 }
 ```
+
+Pass it to `OrderService` in its constructor, and call it from the service after something happens.
 
 Add `index.ts`, and re-export it from `src/observability/loggers/index.ts`.
 
@@ -74,7 +79,8 @@ Add `index.ts`, and re-export it from `src/observability/loggers/index.ts`.
 
 Create `src/plugins/order.ts`. Copy `src/plugins/item.ts` and:
 
-- Extend `declare module 'fastify'` with `orderLogger`, `orderRepository`, and `orderService`.
+- Create `new OrderLogger(fastify.log)` and pass it to `OrderService`.
+- Extend `declare module 'fastify'` with `orderRepository` and `orderService`.
 - List every plugin whose decorators you use in `dependencies`. For example, if `OrderService` needs `fastify.itemRepository`, list `['@fastify/postgres', 'item']`.
 
 Register the plugin in `src/app.ts`, after the plugins it depends on.
@@ -107,7 +113,6 @@ export async function createOrderHandler(
   reply: FastifyReply
 ): Promise<FastifyReply> {
   const order = await request.server.orderService.createOrder(request.body);
-  request.server.orderLogger.onOrderCreated(request.log);
   return reply.code(201).send(success(order));
 }
 ```

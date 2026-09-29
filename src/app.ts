@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import postgres from '@fastify/postgres';
+import fastifyRequestContext from '@fastify/request-context';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import {
@@ -16,6 +18,24 @@ import * as routes from './routes';
 
 function isValidationError(error: unknown): error is { validation: unknown } {
   return typeof error === 'object' && error !== null && 'validation' in error;
+}
+
+// Fastify gives its own request errors (bad JSON, wrong content type, body too large) a 4xx
+// status code. Returns that status, or undefined for anything else.
+function getClientErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) {
+    return undefined;
+  }
+
+  const { statusCode } = error;
+  return typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500
+    ? statusCode
+    : undefined;
+}
+
+// 415 -> 'unsupported_media_type'
+function toErrorName(statusCode: number): string {
+  return (STATUS_CODES[statusCode] ?? 'client_error').toLowerCase().replace(/[^a-z0-9]+/g, '_');
 }
 
 export function setupApp(): FastifyInstance {
@@ -39,7 +59,7 @@ export function setupApp(): FastifyInstance {
     reply.header(config.REQUEST_ID_HEADER, request.id);
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (isValidationError(error)) {
       const definition = ERROR_DEFINITIONS.validationError;
       return reply
@@ -51,11 +71,44 @@ export function setupApp(): FastifyInstance {
       return reply.code(error.statusCode).send(failure(error.code, error.name, error.message));
     }
 
-    app.log.error(error);
+    const clientErrorStatus = getClientErrorStatus(error);
+    if (clientErrorStatus !== undefined) {
+      return reply
+        .code(clientErrorStatus)
+        .send(
+          failure(
+            1000 + clientErrorStatus,
+            toErrorName(clientErrorStatus),
+            (error as Error).message
+          )
+        );
+    }
+
+    // request.log adds the request ID to the log line.
+    request.log.error(error);
     const definition = ERROR_DEFINITIONS.internalError;
     return reply
       .code(definition.statusCode)
       .send(failure(definition.code, definition.name, 'Unexpected server error'));
+  });
+
+  app.setNotFoundHandler((request, reply) => {
+    const definition = ERROR_DEFINITIONS.notFound;
+    return reply
+      .code(definition.statusCode)
+      .send(
+        failure(
+          definition.code,
+          definition.name,
+          `Route ${request.method} ${request.url} not found`
+        )
+      );
+  });
+
+  // Remembers each request's logger while the request runs, so services can log with its
+  // request ID without being passed the request. See src/observability/loggers/request-logger.ts.
+  app.register(fastifyRequestContext, {
+    defaultStoreValues: (request) => ({ log: request.log })
   });
 
   app.register(postgres, config.DATABASE);

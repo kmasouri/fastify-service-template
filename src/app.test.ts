@@ -113,4 +113,87 @@ describe('app routes', () => {
     });
     await app.close();
   });
+
+  it('returns 400 in the error format for a body that is not valid JSON', async () => {
+    const app = setupApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/items',
+      headers: { 'content-type': 'application/json' },
+      payload: '{not json'
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: { code: 1400, name: 'bad_request' }
+    });
+    await app.close();
+  });
+
+  it('returns 415 in the error format for an unsupported content type', async () => {
+    const app = setupApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/items',
+      headers: { 'content-type': 'text/xml' },
+      payload: '<item />'
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: { code: 1415, name: 'unsupported_media_type' }
+    });
+    await app.close();
+  });
+
+  it('returns 404 in the error format for an unknown route', async () => {
+    const app = setupApp();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/does-not-exist'
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      success: false,
+      error: {
+        code: 1404,
+        name: 'not_found',
+        message: 'Route GET /does-not-exist not found'
+      }
+    });
+    await app.close();
+  });
+
+  it('hides the details of unexpected errors and logs them with the request id', async () => {
+    const app = setupApp();
+    app.get('/boom', async () => {
+      throw new Error('secret database detail');
+    });
+    const logs: unknown[] = [];
+    app.addHook('onRequest', async (request) => {
+      jest.spyOn(request.log, 'error').mockImplementation((...args: unknown[]) => {
+        logs.push({ reqId: request.id, args });
+      });
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/boom',
+      headers: { 'x-request-id': 'trace-500' }
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      success: false,
+      error: { code: 1000, name: 'internal_error', message: 'Unexpected server error' }
+    });
+    expect(logs).toEqual([{ reqId: 'trace-500', args: [expect.any(Error)] }]);
+    await app.close();
+  });
 });

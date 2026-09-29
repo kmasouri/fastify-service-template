@@ -1,106 +1,123 @@
 # Architecture
 
-This service uses a layered Fastify structure:
+A request passes through these layers, in this order:
 
 ```text
-routes -> handlers -> services -> repositories -> Postgres
+routes -> handlers -> services -> repositories -> data stores
 ```
 
-Fastify owns dependency wiring through plugins and decorators. The code inside each request follows conventional layers so business rules stay testable without HTTP or a database.
+Each layer has one job. Because of this split, you can test the business logic without starting a server or a database.
 
 ## Layers
 
-- `routes/`: Fastify route plugins. Routes own HTTP method/path registration and the Zod schemas for params, querystring, and body.
-- `handlers/`: HTTP orchestration. Handlers read request data, call services, log domain events, choose response status codes, and wrap success responses.
-- `services/`: Application behavior and domain rules. Services do not know about Fastify request/reply objects.
-- `data/`: Repository contracts and Postgres implementations. Repositories own SQL and row mapping.
-- `observability/`: Domain event loggers today, with room for metrics and tracing later.
-- `plugins/`: Fastify plugins that build repositories, services, and loggers and attach them to the Fastify instance.
-- `shared/`: Cross-cutting domain types, response envelopes, and structured errors.
+- `routes/`: The URL and HTTP method for each endpoint, plus the Zod schemas that check the input.
+- `handlers/`: Read the request, call a service, and send the response.
+- `services/`: The business logic. This is where the app makes decisions. For example, creating an item with a name that is already taken throws a `ConflictError`, and asking for an item that does not exist throws a `NotFoundError`. Services get plain values, never the HTTP request or reply.
+- `data/`: Reading and writing data. This covers every place data is kept: SQL databases, Redis and other caches, Databricks, file storage. Each one sits behind a repository. A repository has two parts: an interface that lists the methods services can call, and a class that does the real work, such as running SQL. Services only know about the interface, so tests can swap in a mock. Repositories do not make business decisions.
+- `observability/`: Loggers for now. Metrics and tracing can go here later.
+- `plugins/`: Create the repositories, services, and loggers when the app starts, and attach the services to the Fastify app.
+- `shared/`: Code every layer can use: data types, the response format, and error classes.
 
-The example feature is `items`. It exists to show every layer end to end; replace or delete it when you build your own domain.
+The `items` feature is an example that uses every layer. Replace it or delete it when you build your own features. To add a feature, follow `docs/adding-a-feature.md`.
 
-## Schemas and types with Zod
+A feature only needs the layers it uses. `healthcheck` has a route and a handler, but no service or repository, because it has no logic and stores no data.
 
-Zod replaces Fastify's default Ajv validator. `src/app.ts` sets this up once:
+## Checking input with Zod
+
+Zod checks all request input. It replaces Ajv, the checker Fastify uses by default. `src/app.ts` sets this up once:
 
 ```ts
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 ```
 
-It also passes `jsonSchemaTransform` to `@fastify/swagger`, which converts the Zod schemas into JSON Schema for the OpenAPI document at `GET /docs`.
+The same Zod schemas also produce the API docs. Swagger UI is at `GET /docs`, and the raw OpenAPI JSON is at `GET /docs/json`.
 
-Each feature keeps its schemas in `routes/<feature>/<feature>.schemas.ts`, next to the inferred types:
+Each feature keeps its schemas in `routes/<feature>/<feature>.schemas.ts`. Each schema has a TypeScript type made from it, right below it:
 
 ```ts
 export const createItemBodySchema = z.strictObject({
-  name: z.string().trim().min(1)
+  name: z.string().trim().min(1),
+  description: z.string().nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
+
 export type CreateItemBody = z.infer<typeof createItemBodySchema>;
 ```
 
-The route passes the schema to Fastify, and the handler uses the type:
+The route uses the schema. The handler uses the type:
 
 ```ts
 // routes/items/items.ts
-schema: {
-  body: createItemBodySchema;
-}
+fastifyInstance.post(
+  '/items',
+  {
+    schema: {
+      description: 'Create an item.',
+      tags: ['items'],
+      body: createItemBodySchema
+    }
+  },
+  createItemHandler
+);
 
 // handlers/items/items.ts
-request: FastifyRequest<{ Body: CreateItemBody }>;
+export async function createItemHandler(
+  request: FastifyRequest<{ Body: CreateItemBody }>,
+  reply: FastifyReply
+): Promise<FastifyReply> {
+  const item = await request.server.itemService.createItem(request.body);
+  return reply.code(201).send(success(item));
+}
 ```
 
-Because both come from one definition, the validation rules and the handler's types cannot drift apart.
+Both come from the same schema, so the checks and the types always match.
 
-Zod's parsed output is what reaches the handler. Defaults (`.default(50)`), coercion (`z.coerce.number()`), and transforms (`.trim()`) are already applied by the time `request.query` or `request.body` is read.
+By the time the handler runs, Zod has already cleaned the input. Default values are filled in (`.default(50)`), strings are turned into numbers (`z.coerce.number()`), and text is trimmed (`.trim()`).
 
-Query strings and path params always arrive as strings. Use `z.coerce.number()` for numeric values there.
+Query strings and URL params are always strings. Use `z.coerce.number()` when you need a number from them.
 
-Routes do not declare response schemas today. You can add them under `schema.response`. The Zod serializer then validates outgoing data, and a mismatch becomes a 500 error.
+Routes do not check their responses yet. To add that, put a schema under `schema.response`. If a response does not match it, the client gets a 500 error.
 
-## Fastify plugins
+## Plugins
 
-Repositories and services are registered through feature-level Fastify plugins:
+Plugins create each feature's objects when the app starts and attach them to the Fastify app. For example, `itemPlugin` creates `ItemLogger` and `ItemPostgresRepository`, passes them to `ItemService`, and attaches `itemRepository` and `itemService`.
 
-- `itemPlugin` decorates `fastify.itemLogger`, `fastify.itemRepository`, and `fastify.itemService`.
+Each plugin also tells TypeScript about these new fields (with `declare module 'fastify'`). It lists the plugins it needs (with `fp(..., { dependencies })`), so the app fails at startup if they are loaded in the wrong order.
 
-Each plugin adds its decorators to the `FastifyInstance` type with `declare module 'fastify'`. It also lists the plugins it depends on in `fp(..., { dependencies })`, so Fastify fails at startup if registration order is wrong.
-
-Handlers are not Fastify plugins. They are plain functions that use `request.server` to access decorated services:
+Handlers are plain functions, not plugins. They get services through `request.server`:
 
 ```ts
-await request.server.itemService.getItem(itemId);
+const item = await request.server.itemService.getItem(request.params.itemId);
 ```
 
 ## Logging
 
-Loggers are thin domain event emitters registered on the Fastify instance. Handlers call them with `request.log` after a service operation succeeds:
+Each feature has a logger with one method per event. The service gets it in its constructor and calls it after something happens:
 
 ```ts
-request.server.itemLogger.onItemCreated(request.log);
+this.itemLogger.onItemCreated();
 ```
 
-Using `request.log` keeps the request ID on every log line without passing Fastify request context into services or repositories.
+Every log line still gets the request ID. The `@fastify/request-context` plugin remembers which request is running, and `currentLogger()` in `src/observability/loggers/request-logger.ts` picks up that request's logger. Outside a request, such as at startup, it uses the app logger instead.
 
-Domain logs always include one structured field:
+Every event log has an `event` field:
 
 ```json
 { "event": "item.created" }
 ```
 
-Event names are lowercase, dot-delimited, and domain first. Logger method names use the lifecycle style `onThingHappened()`.
+Event names are lowercase, with dots between words, and start with the feature name. Logger methods are named `onThingHappened()`.
 
 ## Responses and errors
 
-Successful responses use:
+A successful response looks like this:
 
 ```json
 { "success": true, "data": {} }
 ```
 
-Error responses use:
+An error response looks like this:
 
 ```json
 {
@@ -109,38 +126,38 @@ Error responses use:
 }
 ```
 
-| Class             | HTTP | Code | Name               |
-| ----------------- | ---- | ---- | ------------------ |
-| `ValidationError` | 400  | 1400 | `validation_error` |
-| `NotFoundError`   | 404  | 1404 | `not_found`        |
-| `ConflictError`   | 409  | 1409 | `conflict`         |
-| anything else     | 500  | 1000 | `internal_error`   |
+| Class                                                                 | HTTP                 | Code          | Name                                                               |
+| --------------------------------------------------------------------- | -------------------- | ------------- | ------------------------------------------------------------------ |
+| `ValidationError`                                                     | 400                  | 1400          | `validation_error`                                                 |
+| `NotFoundError`                                                       | 404                  | 1404          | `not_found`                                                        |
+| `ConflictError`                                                       | 409                  | 1409          | `conflict`                                                         |
+| Fastify request errors (bad JSON, wrong content type, body too large) | Fastify's 4xx status | 1000 + status | from the status, such as `bad_request` or `unsupported_media_type` |
+| unknown URL                                                           | 404                  | 1404          | `not_found`                                                        |
+| anything else                                                         | 500                  | 1000          | `internal_error`                                                   |
 
-Services throw these classes. The error handler in `src/app.ts` formats them, and it formats Zod request validation failures as `validation_error`. Handlers should not catch errors just to format responses.
+Services throw these errors. Fastify catches any error thrown in a handler or service and passes it to the error handler in `src/app.ts`, which turns it into the error response above. Bad request input from Zod becomes a `validation_error`. For "anything else", the client only sees "Unexpected server error". The real error goes to the log, with the request ID. Handlers should not catch errors just to format them.
 
-Every response echoes the request ID in the `REQUEST_ID_HEADER` header, which defaults to `x-request-id`. An incoming value is reused; otherwise a UUID is generated.
+Every response includes the request ID in a header. The header name comes from `REQUEST_ID_HEADER` and is `x-request-id` by default. If the caller sends an ID, the app uses it. If not, the app makes a new one.
 
 ## Configuration
 
-`src/config.ts` declares every environment variable in one Zod schema. It exports a single `config` object. Invalid values fail at startup with a message that names the variable.
+Every environment variable is listed in one Zod schema in `src/config.ts`. The rest of the code reads settings from the `config` object it exports. If a value is wrong, the app stops at startup and names the bad variable.
 
-Only `ENVIRONMENT=local` loads `.env`, through Node's native `process.loadEnvFile()`. All other environments use runtime environment variables only.
+The `.env` file is loaded only when `ENVIRONMENT=local`. Everywhere else, settings come from real environment variables.
 
 ## Database
 
-The app uses Postgres via `@fastify/postgres`. The pool connects lazily, so the app and its tests start without a database.
+The app uses Postgres through `@fastify/postgres`. It only connects when the first query runs, so the app and its tests can start without a database.
 
-Table definitions live in `db/schema/`, numbered in dependency order. `000_schema.sql` creates the service's Postgres schema, and the remaining files create tables inside it. Apply them in filename order; they are idempotent (`IF NOT EXISTS`).
+If `DATABASE_URL` is set, the app uses it and ignores `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, and `DATABASE_PASSWORD`.
+
+Table definitions are SQL files in `db/schema/`. `000_schema.sql` creates the Postgres schema, and the other files create the tables in it. Run them in filename order. Running them again is safe, because each one uses `IF NOT EXISTS`.
 
 ## Tests
 
-Tests live next to the files they exercise as `*.test.ts`. Shared fakes use `*.test-helper.ts` and are excluded from the production build.
+Each test file sits next to the file it tests and ends in `.test.ts`. Shared test fakes end in `.test-helper.ts`. Neither is included in the production build.
 
-- Service tests use in-memory repositories, such as `InMemoryItemRepository`.
-- Route tests call `setupApp()` and `app.inject()`. They cover validation, error formatting, request IDs, and Swagger without a database.
+- Service tests replace the repository with a Jest mock, so they need no database.
+- Route tests build the app with `setupApp()` and send requests with `app.inject()`. They check input validation, error responses, request IDs, and Swagger, all without a database.
 
-## Build and deploy
-
-`tsc -p tsconfig.build.json` compiles `src/` into `dist/`, skipping tests. `npm start` and the Dockerfile run `dist/index.js`.
-
-The `infrastructure/` folder holds Terraform for a disposable AWS environment: VPC, ALB, ECR, and ECS Fargate. GitHub Actions workflows in `.github/workflows/` run checks, cut semantic releases, and deploy to ECS. See `README.md` and `infrastructure/README.md`.
+For building, releases, and deployment, see `README.md` and `infrastructure/README.md`.
