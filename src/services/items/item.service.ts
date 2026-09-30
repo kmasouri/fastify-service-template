@@ -1,6 +1,6 @@
 import { ItemRepository } from '../../data';
 import { ItemLogger } from '../../observability';
-import { ConflictError, NotFoundError } from '../../shared/errors';
+import { AppError } from '../../shared/errors';
 import { Item } from '../../shared/types';
 
 export class ItemService {
@@ -16,7 +16,7 @@ export class ItemService {
   }): Promise<Item> {
     const existing = await this.itemRepository.getByName(input.name);
     if (existing) {
-      throw new ConflictError(`Item ${input.name} already exists`);
+      throw new AppError('itemNameTaken', `Item ${input.name} already exists`);
     }
 
     const item = await this.itemRepository.create({
@@ -28,16 +28,22 @@ export class ItemService {
     return item;
   }
 
-  async listItems(input: { limit: number; offset: number }): Promise<Item[]> {
-    const items = await this.itemRepository.list(input);
+  async listItems(input: {
+    limit: number;
+    offset: number;
+  }): Promise<{ items: Item[]; total: number }> {
+    const [items, total] = await Promise.all([
+      this.itemRepository.list(input),
+      this.itemRepository.count()
+    ]);
     this.itemLogger.onItemListed();
-    return items;
+    return { items, total };
   }
 
   async getItem(itemId: string): Promise<Item> {
     const item = await this.itemRepository.getById(itemId);
     if (!item) {
-      throw new NotFoundError(`Item ${itemId} was not found`);
+      throw new AppError('itemNotFound', `Item ${itemId} was not found`);
     }
 
     this.itemLogger.onItemFetched();

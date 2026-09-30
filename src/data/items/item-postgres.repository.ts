@@ -38,6 +38,15 @@ export class ItemPostgresRepository implements ItemRepository {
     return result.rows.map((row) => this.toItem(row));
   }
 
+  async count(): Promise<number> {
+    const result = await this.db.query<{ total: number }>(
+      `SELECT count(*)::int AS total
+       FROM fastify_service_template.items`
+    );
+
+    return result.rows[0].total;
+  }
+
   async getById(itemId: string): Promise<Item | null> {
     const result = await this.db.query<ItemRow>(
       `SELECT *

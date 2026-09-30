@@ -8,19 +8,75 @@ routes -> handlers -> services -> repositories -> data stores
 
 Each layer has one job. Because of this split, you can test the business logic without starting a server or a database.
 
+## Where things live
+
+```text
+src/
+  index.ts                 starts the server
+  app.ts                   builds the app: plugins, error handler, routes
+  config.ts                reads and checks environment variables
+
+  routes/<feature>/        URLs: which method and path run which handler
+  schemas/<feature>/       Zod schemas for request input, and their types
+  handlers/<feature>/      read the request, call a service, send the response
+  services/<feature>/      business logic, errors, logging
+  data/<feature>/          repositories: read and write data
+  plugins/                 build each feature's service at startup
+  observability/loggers/   one logger per feature, one method per event
+  shared/                  types, response helpers, the error catalog
+
+db/schema/                 SQL files that create the tables
+docs/                      how the code works, and what the API returns
+infrastructure/            Terraform for AWS
+```
+
+Code is grouped by layer first, then by feature. For example, all handlers are in `handlers/`, and the item handlers are in `handlers/items/`. We chose this over one folder per feature because:
+
+- Each file does one job, so files stay small.
+- You can see a whole layer at a glance. `routes/` alone is the full list of URLs.
+- The import rules below are easy to check, because each rule is about a folder.
+
+The cost is that one endpoint is spread over a few files. `docs/adding-a-feature.md` lists which ones.
+
 ## Layers
 
-- `routes/`: The URL and HTTP method for each endpoint, plus the Zod schemas that check the input.
-- `handlers/`: Read the request, call a service, and send the response.
-- `services/`: The business logic. This is where the app makes decisions. For example, creating an item with a name that is already taken throws a `ConflictError`, and asking for an item that does not exist throws a `NotFoundError`. Services get plain values, never the HTTP request or reply.
-- `data/`: Reading and writing data. This covers every place data is kept: SQL databases, Redis and other caches, Databricks, file storage. Each one sits behind a repository. A repository has two parts: an interface that lists the methods services can call, and a class that does the real work, such as running SQL. Services only know about the interface, so tests can swap in a mock. Repositories do not make business decisions.
-- `observability/`: Loggers for now. Metrics and tracing can go here later.
-- `plugins/`: Create the repositories, services, and loggers when the app starts, and attach the services to the Fastify app.
-- `shared/`: Code every layer can use: data types, the response format, and error classes.
+| Folder           | What goes here                                                                                                     | Why it's separate                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `routes/`        | The URL and HTTP method for each endpoint, and which schema and handler it uses. Swagger `description` and `tags`. | The router file reads like a table of contents for the API.                                                              |
+| `schemas/`       | Zod schemas that check request input, with the TypeScript type made from each one.                                 | Routes need the schemas and handlers need the types. A shared folder lets both use them without depending on each other. |
+| `handlers/`      | Read the request, call one service, send the response.                                                             | Keeps HTTP details out of the business logic.                                                                            |
+| `services/`      | The business logic. For example, a name that is already taken throws `itemNameTaken`. Services also log events.    | Business logic can be tested with plain values, no server or database.                                                   |
+| `data/`          | Repositories: everything that reads or writes data, such as SQL, caches, Databricks, or file storage.              | The rest of the app doesn't care where data is kept. Tests swap in a mock.                                               |
+| `plugins/`       | Build each feature's repository, logger, and service when the app starts, and attach the service to Fastify.       | All the wiring for a feature is in one place.                                                                            |
+| `observability/` | Loggers for now. Metrics and tracing can go here later.                                                            | Log names and fields stay the same everywhere.                                                                           |
+| `shared/`        | Data types, response helpers, and the error catalog.                                                               | Every layer needs these, so they can't live in any one layer.                                                            |
+
+A repository has two parts: an interface that lists the methods services can call, and a class that does the real work, such as running SQL. Services only know about the interface. Repositories never make business decisions.
 
 The `items` feature is an example that uses every layer. Replace it or delete it when you build your own features. To add a feature, follow `docs/adding-a-feature.md`.
 
-A feature only needs the layers it uses. `healthcheck` has a route and a handler, but no service or repository, because it has no logic and stores no data.
+A feature only needs the layers it uses. `healthcheck` has a route and a handler, but no schema, service, or repository, because it has no input, no logic, and no data.
+
+## Who can import what
+
+Imports only go one way, down the list:
+
+```text
+routes    -> schemas, handlers
+handlers  -> schemas (types only), services through request.server
+services  -> data, observability
+data      -> (nothing but shared)
+schemas   -> (nothing but shared)
+everything -> shared
+```
+
+`plugins/` is the one place that imports repositories, loggers, and services together, because its job is to connect them.
+
+These rules keep each layer easy to change without breaking the ones above it. Lint enforces the important ones:
+
+- Routes and handlers can't import from `data/`. Only services use repositories.
+- Handlers can't import from `routes/`.
+- Schemas can't import from any other layer.
 
 ## Checking input with Zod
 
@@ -33,7 +89,7 @@ app.setSerializerCompiler(serializerCompiler);
 
 The same Zod schemas also produce the API docs. Swagger UI is at `GET /docs`, and the raw OpenAPI JSON is at `GET /docs/json`.
 
-Each feature keeps its schemas in `routes/<feature>/<feature>.schemas.ts`. Each schema has a TypeScript type made from it, right below it:
+Each feature keeps its schemas in `schemas/<feature>/<feature>.schemas.ts`. Each schema has a TypeScript type made from it, right below it:
 
 ```ts
 export const createItemBodySchema = z.strictObject({
@@ -81,7 +137,9 @@ Routes do not check their responses yet. To add that, put a schema under `schema
 
 ## Plugins
 
-Plugins create each feature's objects when the app starts and attach them to the Fastify app. For example, `itemPlugin` creates `ItemLogger` and `ItemPostgresRepository`, passes them to `ItemService`, and attaches `itemRepository` and `itemService`.
+Plugins create each feature's objects when the app starts and attach them to the Fastify app. For example, `itemPlugin` creates `ItemLogger` and `ItemPostgresRepository`, passes them to `ItemService`, and attaches only `itemService`.
+
+Only services use repositories. Routes and handlers never touch them, and lint fails if they try to import from `src/data`. If a service needs another feature's data, the plugin passes it that feature's repository too.
 
 Each plugin also tells TypeScript about these new fields (with `declare module 'fastify'`). It lists the plugins it needs (with `fp(..., { dependencies })`), so the app fails at startup if they are loaded in the wrong order.
 
@@ -111,31 +169,37 @@ Event names are lowercase, with dots between words, and start with the feature n
 
 ## Responses and errors
 
-A successful response looks like this:
+The full response format, for API clients, is in `docs/responses.md`. In short:
 
-```json
-{ "success": true, "data": {} }
+```jsonc
+// success
+{ "data": { "id": "1f0c...", "name": "Widget" } }
+
+// list
+{ "data": [], "page": { "limit": 50, "offset": 0, "total": 132 } }
+
+// error
+{ "error": { "code": 20002, "name": "itemNotFound", "message": "...", "requestId": "8f3c..." } }
 ```
 
-An error response looks like this:
+Handlers use `success(data)` or `paged(items, { limit, offset, total })` from `src/shared/response.ts`. Error responses are built only by the error handler in `src/app.ts`.
 
-```json
-{
-  "success": false,
-  "error": { "code": 1400, "name": "validation_error", "message": "Request validation failed" }
-}
+Every error has its own `code` and `name`. The full list, with what each one means, is in `docs/errors.md`. The list itself lives in `src/shared/errors.ts`.
+
+Services throw errors by name from that list:
+
+```ts
+throw new AppError('itemNotFound', `Item ${itemId} was not found`);
 ```
 
-| Class                                                                 | HTTP                 | Code          | Name                                                               |
-| --------------------------------------------------------------------- | -------------------- | ------------- | ------------------------------------------------------------------ |
-| `ValidationError`                                                     | 400                  | 1400          | `validation_error`                                                 |
-| `NotFoundError`                                                       | 404                  | 1404          | `not_found`                                                        |
-| `ConflictError`                                                       | 409                  | 1409          | `conflict`                                                         |
-| Fastify request errors (bad JSON, wrong content type, body too large) | Fastify's 4xx status | 1000 + status | from the status, such as `bad_request` or `unsupported_media_type` |
-| unknown URL                                                           | 404                  | 1404          | `not_found`                                                        |
-| anything else                                                         | 500                  | 1000          | `internal_error`                                                   |
+Fastify catches any error thrown in a handler or service and passes it to the error handler in `src/app.ts`, which turns it into the error response above. It also handles errors that don't come from our code:
 
-Services throw these errors. Fastify catches any error thrown in a handler or service and passes it to the error handler in `src/app.ts`, which turns it into the error response above. Bad request input from Zod becomes a `validation_error`. For "anything else", the client only sees "Unexpected server error". The real error goes to the log, with the request ID. Handlers should not catch errors just to format them.
+- Bad request input from Zod becomes `validationError`.
+- Fastify's own request errors become `invalidRequest`, `payloadTooLarge`, or `unsupportedMediaType`.
+- An unknown URL becomes `routeNotFound`.
+- Anything else becomes `internalError`. The client only sees "Unexpected server error". The real error goes to the log, with the request ID.
+
+Handlers should not catch errors just to format them.
 
 Every response includes the request ID in a header. The header name comes from `REQUEST_ID_HEADER` and is `x-request-id` by default. If the caller sends an ID, the app uses it. If not, the app makes a new one.
 

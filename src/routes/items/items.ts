@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { createItemHandler, getItemHandler, listItemsHandler } from '../../handlers';
-import { createItemBodySchema, itemParamsSchema, listItemsQuerySchema } from './items.schemas';
+import { createItemBodySchema, itemParamsSchema, listItemsQuerySchema } from '../../schemas';
 
 export async function itemsRouter(fastifyInstance: FastifyInstance): Promise<void> {
   fastifyInstance.post(

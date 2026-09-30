@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { STATUS_CODES } from 'node:http';
 import postgres from '@fastify/postgres';
 import fastifyRequestContext from '@fastify/request-context';
 import swagger from '@fastify/swagger';
@@ -9,15 +8,52 @@ import {
   serializerCompiler,
   validatorCompiler
 } from '@fastify/type-provider-zod';
-import fastify, { FastifyInstance } from 'fastify';
+import fastify, { FastifyInstance, FastifyReply, FastifySchemaValidationError } from 'fastify';
 import { config } from './config';
 import itemPlugin from './plugins/item';
-import { AppError, ERROR_DEFINITIONS } from './shared/errors';
-import { failure } from './shared/response';
+import { AppError, ErrorName, ERRORS } from './shared/errors';
+import { ErrorDetail, failure } from './shared/response';
 import * as routes from './routes';
 
-function isValidationError(error: unknown): error is { validation: unknown } {
-  return typeof error === 'object' && error !== null && 'validation' in error;
+interface RequestValidationError {
+  validation: FastifySchemaValidationError[];
+  validationContext?: string;
+}
+
+function isValidationError(error: unknown): error is RequestValidationError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'validation' in error &&
+    Array.isArray(error.validation)
+  );
+}
+
+// Turns Zod's issues into one entry per bad field, such as
+// { field: 'name', in: 'body', message: 'Invalid input: expected string, received undefined' }.
+function toErrorDetails(error: RequestValidationError): ErrorDetail[] {
+  const location = error.validationContext ?? 'request';
+
+  return error.validation.flatMap((issue) => {
+    const path = issue.instancePath.split('/').filter(Boolean);
+
+    // z.strictObject reports all unknown fields in one issue. Split them up.
+    if (issue.keyword === 'unrecognized_keys' && Array.isArray(issue.params.keys)) {
+      return issue.params.keys.map((key) => ({
+        field: [...path, String(key)].join('.'),
+        in: location,
+        message: 'Unknown field'
+      }));
+    }
+
+    return [
+      {
+        field: path.length > 0 ? path.join('.') : undefined,
+        in: location,
+        message: issue.message ?? 'Invalid value'
+      }
+    ];
+  });
 }
 
 // Fastify gives its own request errors (bad JSON, wrong content type, body too large) a 4xx
@@ -33,15 +69,42 @@ function getClientErrorStatus(error: unknown): number | undefined {
     : undefined;
 }
 
-// 415 -> 'unsupported_media_type'
-function toErrorName(statusCode: number): string {
-  return (STATUS_CODES[statusCode] ?? 'client_error').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+// Picks the catalog error for a Fastify request error by its status.
+function toClientErrorName(statusCode: number): ErrorName {
+  if (statusCode === 413) {
+    return 'payloadTooLarge';
+  }
+  if (statusCode === 415) {
+    return 'unsupportedMediaType';
+  }
+  return 'invalidRequest';
+}
+
+// Every error response goes through here, so they all look the same. See docs/responses.md.
+function sendError(
+  reply: FastifyReply,
+  name: ErrorName,
+  options: { message?: string; details?: ErrorDetail[]; statusCode?: number } = {}
+): FastifyReply {
+  const definition = ERRORS[name];
+  return reply.code(options.statusCode ?? definition.statusCode).send(
+    failure({
+      code: definition.code,
+      name,
+      message: options.message ?? definition.message,
+      requestId: reply.request.id,
+      ...(options.details && { details: options.details })
+    })
+  );
 }
 
 export function setupApp(): FastifyInstance {
   const app = fastify({
     logger: {
-      level: config.LOGGER_LEVEL
+      level: config.LOGGER_LEVEL,
+      // Readable, colored logs when running locally. Everywhere else, logs stay JSON so log
+      // tools can search their fields. pino-pretty is a dev dependency, so it is not in the image.
+      ...(config.ENVIRONMENT === 'local' && { transport: { target: 'pino-pretty' } })
     },
     requestIdHeader: config.REQUEST_ID_HEADER,
     genReqId: () => randomUUID()
@@ -61,49 +124,31 @@ export function setupApp(): FastifyInstance {
 
   app.setErrorHandler((error, request, reply) => {
     if (isValidationError(error)) {
-      const definition = ERROR_DEFINITIONS.validationError;
-      return reply
-        .code(definition.statusCode)
-        .send(failure(definition.code, definition.name, 'Request validation failed'));
+      return sendError(reply, 'validationError', { details: toErrorDetails(error) });
     }
 
     if (error instanceof AppError) {
-      return reply.code(error.statusCode).send(failure(error.code, error.name, error.message));
+      return sendError(reply, error.name, { message: error.message });
     }
 
     const clientErrorStatus = getClientErrorStatus(error);
     if (clientErrorStatus !== undefined) {
-      return reply
-        .code(clientErrorStatus)
-        .send(
-          failure(
-            1000 + clientErrorStatus,
-            toErrorName(clientErrorStatus),
-            (error as Error).message
-          )
-        );
+      return sendError(reply, toClientErrorName(clientErrorStatus), {
+        message: (error as Error).message,
+        statusCode: clientErrorStatus
+      });
     }
 
     // request.log adds the request ID to the log line.
     request.log.error(error);
-    const definition = ERROR_DEFINITIONS.internalError;
-    return reply
-      .code(definition.statusCode)
-      .send(failure(definition.code, definition.name, 'Unexpected server error'));
+    return sendError(reply, 'internalError');
   });
 
-  app.setNotFoundHandler((request, reply) => {
-    const definition = ERROR_DEFINITIONS.notFound;
-    return reply
-      .code(definition.statusCode)
-      .send(
-        failure(
-          definition.code,
-          definition.name,
-          `Route ${request.method} ${request.url} not found`
-        )
-      );
-  });
+  app.setNotFoundHandler((request, reply) =>
+    sendError(reply, 'routeNotFound', {
+      message: `Route ${request.method} ${request.url} not found`
+    })
+  );
 
   // Remembers each request's logger while the request runs, so services can log with its
   // request ID without being passed the request. See src/observability/loggers/request-logger.ts.

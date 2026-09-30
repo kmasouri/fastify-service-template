@@ -14,6 +14,7 @@ export interface ListItemsInput {
 export interface ItemRepository {
   create(input: CreateItemInput): Promise<Item>;
   list(input: ListItemsInput): Promise<Item[]>;
+  count(): Promise<number>;
   getById(itemId: string): Promise<Item | null>;
   getByName(name: string): Promise<Item | null>;
 }

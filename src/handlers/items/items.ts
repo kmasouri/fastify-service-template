@@ -1,6 +1,6 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
-import type { CreateItemBody, ItemParams, ListItemsQuery } from '../../routes/items/items.schemas';
-import { success } from '../../shared/response';
+import type { CreateItemBody, ItemParams, ListItemsQuery } from '../../schemas';
+import { paged, success } from '../../shared/response';
 
 export async function createItemHandler(
   request: FastifyRequest<{ Body: CreateItemBody }>,
@@ -13,8 +13,9 @@ export async function createItemHandler(
 export async function listItemsHandler(
   request: FastifyRequest<{ Querystring: ListItemsQuery }>
 ): Promise<unknown> {
-  const items = await request.server.itemService.listItems(request.query);
-  return success(items);
+  const { limit, offset } = request.query;
+  const { items, total } = await request.server.itemService.listItems({ limit, offset });
+  return paged(items, { limit, offset, total });
 }
 
 export async function getItemHandler(

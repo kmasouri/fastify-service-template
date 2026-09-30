@@ -11,7 +11,6 @@ describe('app routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      success: true,
       data: {
         status: 'ok'
       }
@@ -54,6 +53,21 @@ describe('app routes', () => {
     await app.close();
   });
 
+  it('returns lists with paging info', async () => {
+    const app = setupApp();
+    await app.ready();
+    jest.spyOn(app.itemService, 'listItems').mockResolvedValue({ items: [], total: 3 });
+
+    const response = await app.inject({ method: 'GET', url: '/items?limit=2&offset=1' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      data: [],
+      page: { limit: 2, offset: 1, total: 3 }
+    });
+    await app.close();
+  });
+
   it('uses an incoming request id header when provided', async () => {
     const app = setupApp();
     const requestId = 'external-trace-id-123';
@@ -87,28 +101,52 @@ describe('app routes', () => {
   });
 
   it.each([
-    ['an invalid path param', { method: 'GET' as const, url: '/items/not-a-uuid' }],
-    ['an out-of-range query param', { method: 'GET' as const, url: '/items?limit=500' }],
     [
-      'a body with a missing required field',
-      { method: 'POST' as const, url: '/items', payload: { description: 'no name' } }
+      'an invalid path param',
+      { method: 'GET' as const, url: '/items/not-a-uuid' },
+      [{ field: 'itemId', in: 'params', message: 'Invalid UUID' }]
     ],
     [
-      'a body with an unknown field',
-      { method: 'POST' as const, url: '/items', payload: { name: 'Widget', extra: true } }
+      'an out-of-range query param',
+      { method: 'GET' as const, url: '/items?limit=500' },
+      [{ field: 'limit', in: 'querystring', message: 'Too big: expected number to be <=100' }]
+    ],
+    [
+      'a body with a missing required field',
+      { method: 'POST' as const, url: '/items', payload: { description: 'no name' } },
+      [
+        {
+          field: 'name',
+          in: 'body',
+          message: 'Invalid input: expected string, received undefined'
+        }
+      ]
+    ],
+    [
+      'a body with unknown fields',
+      {
+        method: 'POST' as const,
+        url: '/items',
+        payload: { name: 'Widget', extra: true, other: 1 }
+      },
+      [
+        { field: 'extra', in: 'body', message: 'Unknown field' },
+        { field: 'other', in: 'body', message: 'Unknown field' }
+      ]
     ]
-  ])('returns validation errors through the shared error handler for %s', async (_, request) => {
+  ])('returns validation errors with the bad fields for %s', async (_, request, details) => {
     const app = setupApp();
 
     const response = await app.inject(request);
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({
-      success: false,
       error: {
-        code: 1400,
-        name: 'validation_error',
-        message: 'Request validation failed'
+        code: 10001,
+        name: 'validationError',
+        message: 'Request validation failed',
+        requestId: expect.any(String),
+        details
       }
     });
     await app.close();
@@ -126,8 +164,7 @@ describe('app routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({
-      success: false,
-      error: { code: 1400, name: 'bad_request' }
+      error: { code: 10003, name: 'invalidRequest' }
     });
     await app.close();
   });
@@ -144,8 +181,23 @@ describe('app routes', () => {
 
     expect(response.statusCode).toBe(415);
     expect(response.json()).toMatchObject({
-      success: false,
-      error: { code: 1415, name: 'unsupported_media_type' }
+      error: { code: 10005, name: 'unsupportedMediaType' }
+    });
+    await app.close();
+  });
+
+  it('returns 413 in the error format for a body that is too large', async () => {
+    const app = setupApp();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/items',
+      payload: { name: 'x'.repeat(2 * 1024 * 1024) }
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({
+      error: { code: 10004, name: 'payloadTooLarge' }
     });
     await app.close();
   });
@@ -160,11 +212,11 @@ describe('app routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({
-      success: false,
       error: {
-        code: 1404,
-        name: 'not_found',
-        message: 'Route GET /does-not-exist not found'
+        code: 10002,
+        name: 'routeNotFound',
+        message: 'Route GET /does-not-exist not found',
+        requestId: expect.any(String)
       }
     });
     await app.close();
@@ -190,8 +242,12 @@ describe('app routes', () => {
 
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({
-      success: false,
-      error: { code: 1000, name: 'internal_error', message: 'Unexpected server error' }
+      error: {
+        code: 10000,
+        name: 'internalError',
+        message: 'Unexpected server error',
+        requestId: 'trace-500'
+      }
     });
     expect(logs).toEqual([{ reqId: 'trace-500', args: [expect.any(Error)] }]);
     await app.close();

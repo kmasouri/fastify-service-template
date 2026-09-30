@@ -7,6 +7,7 @@ function mockRepository(): jest.Mocked<ItemRepository> {
   return {
     create: jest.fn(),
     list: jest.fn(),
+    count: jest.fn(),
     getById: jest.fn(),
     getByName: jest.fn()
   };
@@ -55,6 +56,8 @@ describe('ItemService', () => {
     const service = new ItemService(repository, logger);
 
     await expect(service.createItem({ name: 'WIDGET' })).rejects.toMatchObject({
+      name: 'itemNameTaken',
+      code: 20001,
       statusCode: 409
     });
     expect(repository.getByName).toHaveBeenCalledWith('WIDGET');
@@ -66,11 +69,12 @@ describe('ItemService', () => {
     const repository = mockRepository();
     const logger = mockLogger();
     repository.list.mockResolvedValue([widget]);
+    repository.count.mockResolvedValue(3);
     const service = new ItemService(repository, logger);
 
-    const items = await service.listItems({ limit: 2, offset: 1 });
+    const result = await service.listItems({ limit: 2, offset: 1 });
 
-    expect(items).toEqual([widget]);
+    expect(result).toEqual({ items: [widget], total: 3 });
     expect(repository.list).toHaveBeenCalledWith({ limit: 2, offset: 1 });
   });
 
@@ -90,6 +94,8 @@ describe('ItemService', () => {
     const service = new ItemService(repository, logger);
 
     await expect(service.getItem(widget.id)).rejects.toMatchObject({
+      name: 'itemNotFound',
+      code: 20002,
       statusCode: 404
     });
   });

@@ -1,33 +1,45 @@
+// Response shapes. docs/responses.md describes them for API clients.
+
 export interface ApiSuccess<T> {
-  success: true;
   data: T;
 }
 
+export interface PageInfo {
+  limit: number;
+  offset: number;
+  total: number;
+}
+
+export interface ApiPage<T> {
+  data: T[];
+  page: PageInfo;
+}
+
+// One problem with the request input, such as a missing body field.
+export interface ErrorDetail {
+  field?: string;
+  in: string;
+  message: string;
+}
+
 export interface ApiFailure {
-  success: false;
   error: {
     code: number;
     name: string;
     message: string;
+    requestId: string;
+    details?: ErrorDetail[];
   };
 }
-
-export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
 
 export function success<T>(data: T): ApiSuccess<T> {
-  return {
-    success: true,
-    data
-  };
+  return { data };
 }
 
-export function failure(code: number, name: string, message: string): ApiFailure {
-  return {
-    success: false,
-    error: {
-      code,
-      name,
-      message
-    }
-  };
+export function paged<T>(data: T[], page: PageInfo): ApiPage<T> {
+  return { data, page };
+}
+
+export function failure(error: ApiFailure['error']): ApiFailure {
+  return { error };
 }

@@ -1,74 +1,80 @@
 # AGENTS.md
 
-Instructions for AI coding agents working in this repository. Humans should start with `README.md`; the rules here apply to everyone.
+Rules for AI coding agents working in this repo. They apply to people too.
+
+This file says what to do and what not to do. For how things work and why, read:
+
+- `docs/architecture.md`: how the code is set up.
+- `docs/adding-a-feature.md`: step-by-step guide for a new feature.
+- `docs/responses.md` and `docs/errors.md`: what the API sends back.
 
 ## Commands
 
 ```bash
 npm install
-npm run dev            # ENVIRONMENT=local, loads .env, watches src/
+npm run dev            # runs locally with .env and restarts on changes
 npm run lint
-npm run build          # tsc -p tsconfig.build.json -> dist/
-npm test               # jest, ENVIRONMENT=test, silent logger
-npm run check          # lint + typecheck + build + test; run this before you finish any change
+npm run typecheck
+npm run build          # compiles src/ to dist/
+npm test               # no database needed
+npm run check          # lint + typecheck + build + test
 ```
 
-Tests do not need a database. Never mark work done while `npm run check` fails.
+Run `npm run check` before you finish any change. Never call work done while it fails.
 
-## Architecture
+## Layers
 
-Requests flow through fixed layers. Each layer only calls the one below it:
+A request goes `routes -> handlers -> services -> repositories`. Each layer only calls the one right below it. Routes and handlers both use `src/schemas/`, which imports nothing from the other layers.
 
-```text
-routes -> handlers -> services -> repositories (src/data) -> Postgres
-```
+Put new code in the folder for its layer, then in a folder for its feature. The full folder map, who can import what, and why, are in the "Where things live" and "Who can import what" sections of `docs/architecture.md`. Lint enforces the import rules; don't turn them off.
 
-| Layer   | Folder                       | Owns                                                                                               | Must not                                                     |
-| ------- | ---------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Route   | `src/routes/<feature>/`      | Method, path, Zod schemas, Swagger `description`/`tags`                                            | Contain logic                                                |
-| Handler | `src/handlers/<feature>/`    | Read request, call a service, pick status, wrap response                                           | Contain business rules, catch errors to format them, run SQL |
-| Service | `src/services/<feature>/`    | Business rules; throws `AppError` subclasses                                                       | Import Fastify request/reply types                           |
-| Data    | `src/data/<feature>/`        | Access to every store (SQL, cache, etc.): repository interface + implementations, queries, mapping | Contain business rules                                       |
-| Plugin  | `src/plugins/<domain>.ts`    | Build repo/logger/service and `decorate` the service onto Fastify                                  | Register routes                                              |
-| Logger  | `src/observability/loggers/` | Domain event methods (`onItemCreated`), called by services                                         | Be called from handlers or repositories                      |
-| Shared  | `src/shared/`                | Domain types, response envelope, error classes                                                     | Depend on any other layer                                    |
+| Layer      | Folder                       | Does                                                                           | Never                                                   |
+| ---------- | ---------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| Route      | `src/routes/<feature>/`      | URL, method, which schema and handler to use, Swagger `description` and `tags` | Contain logic                                           |
+| Schema     | `src/schemas/<feature>/`     | Zod schemas for request input, and their types                                 | Import from any layer but `shared`                      |
+| Handler    | `src/handlers/<feature>/`    | Read the request, call one service, send the response                          | Make business decisions, use a repository, catch errors |
+| Service    | `src/services/<feature>/`    | Business logic, logging, throwing errors                                       | Use Fastify request or reply objects                    |
+| Repository | `src/data/<feature>/`        | Read and write data (SQL, cache, other stores)                                 | Make business decisions                                 |
+| Plugin     | `src/plugins/<feature>.ts`   | Build the repository, logger, and service at startup                           | Attach anything but the service to Fastify              |
+| Logger     | `src/observability/loggers/` | One method per event, called by services                                       | Be called from handlers or repositories                 |
+| Shared     | `src/shared/`                | Types, response helpers, the error catalog                                     | Import from any other layer                             |
 
-Full explanation: `docs/architecture.md`. Step-by-step feature walkthrough: `docs/adding-a-feature.md`.
+## Hard rules
 
-## Rules
-
-- **Zod is the only schema language.** Route schemas are Zod schemas in `src/routes/<feature>/<feature>.schemas.ts`. Export the schema and its `z.infer` type side by side. Handlers type requests with those inferred types (`FastifyRequest<{ Body: CreateItemBody }>`). Never hand-write a request type that duplicates a schema, and never write raw JSON Schema.
-- **Query and path numbers need `z.coerce`.** Zod does not coerce strings like Ajv does.
-- **Request bodies use `z.strictObject`** so unknown fields are rejected.
-- **Handlers reach dependencies through `request.server`** (`request.server.itemService`), never through imports of concrete classes.
-- **Errors:** services throw `NotFoundError`, `ConflictError`, or `ValidationError` from `src/shared/errors.ts`. The error handler in `src/app.ts` turns them into the error envelope. Do not `try/catch` in handlers just to format responses.
-- **Responses:** always `success(data)` from `src/shared/response.ts`. Use `reply.code(201).send(success(x))` for creates.
-- **Logging:** services log through their domain logger, passed in the constructor. Add a method to it for every new event. Event names are lowercase, dot-delimited, domain first (`item.created`). Method names are `onThingHappened`.
-- **Config:** every environment variable is declared in the Zod schema in `src/config.ts`, documented in `README.md`, and added to `.env.example`. Read config only through the exported `config` object.
-- **SQL:** parameterized queries only (`$1`, `$2`). Tables live in the Postgres schema named in `db/schema/000_schema.sql`. New tables go in a new numbered file in `db/schema/`.
-- **Barrels:** each feature folder has an `index.ts`, and the layer root `index.ts` re-exports it. Import from the layer root (`from '../../data'`).
-- **Tests** sit next to the file they test as `*.test.ts`. Shared fakes are `*.test-helper.ts`. Service tests mock the repository with `jest.fn()`. Route tests use `app.inject`.
+- **Only services use repositories.** A plugin builds the repository and passes it to the service's constructor. Never attach a repository to Fastify, and never use one in a route or handler. Lint fails if a route or handler imports from `src/data`. If a service needs another feature's data, give it that feature's repository in its constructor.
+- **Handlers get services from `request.server`**, like `request.server.itemService`. Never import a service class into a handler.
+- **Zod is the only way to check input.** Schemas go in `src/schemas/<feature>/<feature>.schemas.ts`, with the `z.infer` type right below each one. Routes use the schemas, and handlers use the types. Never import from `src/routes` in a handler. Never write a request type by hand, and never write raw JSON Schema.
+- **Request bodies use `z.strictObject`**, so unknown fields are rejected.
+- **Numbers in the query string or URL use `z.coerce.number()`.** They arrive as strings.
+- **Errors come from the catalog.** Every error has its own entry in `ERRORS` in `src/shared/errors.ts`, with a unique code: `10xxx` for general errors, and a new range per feature. Names are camelCase. Services throw `new AppError('itemNotFound', message)`. Add every new error to `docs/errors.md` too; a test checks this. Never change or reuse a code that has shipped.
+- **Don't catch errors in handlers** just to build an error response. The error handler in `src/app.ts` does that.
+- **Responses use the helpers** in `src/shared/response.ts`: `success(data)` for one thing, `paged(items, { limit, offset, total })` for lists. Creates return `201`. If you change the response shape, update `docs/responses.md`.
+- **Services log through their feature's logger**, passed in the constructor. Add one method per event. Event names are lowercase with dots, feature first (`item.created`). Method names look like `onItemCreated`.
+- **SQL uses parameters** (`$1`, `$2`), never values pasted into the query string. Tables live in the Postgres schema from `db/schema/000_schema.sql`. Each new table gets a new numbered file in `db/schema/`.
+- **Every environment variable** goes in the Zod schema in `src/config.ts`, in the table in `README.md`, and in `.env.example`. Read settings only from the exported `config` object.
+- **Import from the layer's root `index.ts`**, like `from '../../data'`, not from a feature folder inside it. Every feature folder has an `index.ts`, and the layer's root `index.ts` re-exports it.
+- **Tests sit next to the file they test** and end in `.test.ts`. Service tests mock the repository with `jest.fn()`. Route tests use `app.inject`. Tests never need a database.
+- **Write docs and comments in plain language.** Short sentences, everyday words.
 
 ## Naming
 
 ```text
-src/routes/<feature>/<feature>.ts              -> <feature>Router
-src/routes/<feature>/<feature>.schemas.ts      -> <thing>Schema + inferred type
-src/handlers/<feature>/<feature>.ts            -> <action><Thing>Handler
-src/services/<feature>/<domain>.service.ts     -> <Domain>Service
-src/data/<feature>/<domain>.repository.ts      -> <Domain>Repository (interface)
-src/data/<feature>/<domain>-postgres.repository.ts -> <Domain>PostgresRepository
-src/observability/loggers/<feature>/<domain>.logger.ts -> <Domain>Logger
-src/plugins/<domain>.ts                        -> default export fp(<domain>Plugin, { name: '<domain>' })
+src/routes/<feature>/<feature>.ts                       -> <feature>Router
+src/schemas/<feature>/<feature>.schemas.ts              -> <thing>Schema + its type
+src/handlers/<feature>/<feature>.ts                     -> <action><Thing>Handler
+src/services/<feature>/<domain>.service.ts              -> <Domain>Service
+src/data/<feature>/<domain>.repository.ts               -> <Domain>Repository (interface)
+src/data/<feature>/<domain>-postgres.repository.ts      -> <Domain>PostgresRepository
+src/observability/loggers/<feature>/<domain>.logger.ts  -> <Domain>Logger
+src/plugins/<domain>.ts                                 -> default export fp(<domain>Plugin, { name: '<domain>' })
 ```
 
-Feature folders are plural (`items`); domain file names are singular (`item.service.ts`).
+Feature folders are plural (`items`). File names inside them are singular (`item.service.ts`).
 
-## Do not
+## Don't
 
-- Add a validation library other than Zod, or register Ajv schemas.
-- Put business rules in routes or handlers.
-- Add dependencies without a clear need; prefer what is already installed.
+- Add a validation library other than Zod, or use Ajv schemas.
+- Add a package without a clear need. Use what's already installed first.
 - Edit `infrastructure/` or `.github/workflows/` unless the task is about deployment.
-- Upgrade TypeScript to 7.x until `ts-jest` and `typescript-eslint` support it. Both currently stop below 7.
-- Remove `NODE_OPTIONS=--experimental-vm-modules` from the test scripts. Jest needs it to load ESM-only packages that `@fastify/swagger-ui` 6 depends on.
+- Upgrade TypeScript to 7 until `ts-jest` and `typescript-eslint` support it. Both stop below 7 today.
+- Remove `NODE_OPTIONS=--experimental-vm-modules` from the test scripts. Jest needs it to load packages that `@fastify/swagger-ui` 6 depends on.
