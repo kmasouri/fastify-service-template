@@ -4,6 +4,7 @@ A request passes through these layers, in this order:
 
 ```text
 routes -> handlers -> services -> repositories -> data stores
+                               -> integrations -> outside systems
 ```
 
 Each layer has one job. Because of this split, you can test the business logic without starting a server or a database.
@@ -21,6 +22,7 @@ src/
   handlers/<feature>/      read the request, call a service, send the response
   services/<feature>/      business logic, errors, logging
   data/<feature>/          repositories: read and write data
+  integrations/<feature>/  call outside systems, like another company's API
   plugins/                 build each feature's service at startup
   observability/loggers/   one logger per feature, one method per event
   shared/                  types, response helpers, the error catalog
@@ -40,20 +42,21 @@ The cost is that one endpoint is spread over a few files. `docs/adding-a-feature
 
 ## Layers
 
-| Folder           | What goes here                                                                                                     | Why it's separate                                                                                                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `routes/`        | The URL and HTTP method for each endpoint, and which schema and handler it uses. Swagger `description` and `tags`. | The router file reads like a table of contents for the API.                                                              |
-| `schemas/`       | Zod schemas that check request input, with the TypeScript type made from each one.                                 | Routes need the schemas and handlers need the types. A shared folder lets both use them without depending on each other. |
-| `handlers/`      | Read the request, call one service, send the response.                                                             | Keeps HTTP details out of the business logic.                                                                            |
-| `services/`      | The business logic. For example, a name that is already taken throws `itemNameTaken`. Services also log events.    | Business logic can be tested with plain values, no server or database.                                                   |
-| `data/`          | Repositories: everything that reads or writes data, such as SQL, caches, Databricks, or file storage.              | The rest of the app doesn't care where data is kept. Tests swap in a mock.                                               |
-| `plugins/`       | Build each feature's repository, logger, and service when the app starts, and attach the service to Fastify.       | All the wiring for a feature is in one place.                                                                            |
-| `observability/` | Loggers for now. Metrics and tracing can go here later.                                                            | Log names and fields stay the same everywhere.                                                                           |
-| `shared/`        | Data types, response helpers, and the error catalog.                                                               | Every layer needs these, so they can't live in any one layer.                                                            |
+| Folder           | What goes here                                                                                                               | Why it's separate                                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `routes/`        | The URL and HTTP method for each endpoint, and which schema and handler it uses. Swagger `description` and `tags`.           | The router file reads like a table of contents for the API.                                                              |
+| `schemas/`       | Zod schemas that check request input, with the TypeScript type made from each one.                                           | Routes need the schemas and handlers need the types. A shared folder lets both use them without depending on each other. |
+| `handlers/`      | Read the request, call one service, send the response.                                                                       | Keeps HTTP details out of the business logic.                                                                            |
+| `services/`      | The business logic. For example, a name that is already taken throws `itemNameTaken`. Services also log events.              | Business logic can be tested with plain values, no server or database.                                                   |
+| `data/`          | Repositories: everything that reads or writes data, such as SQL, caches, Databricks, or file storage.                        | The rest of the app doesn't care where data is kept. Tests swap in a mock.                                               |
+| `integrations/`  | Calls to any outside system that isn't storage: another company's API, an LLM, email, payments, and so on.                   | The rest of the app doesn't care how the outside system works. Tests swap in a mock.                                     |
+| `plugins/`       | Build each feature's repositories, integrations, logger, and service when the app starts, and attach the service to Fastify. | All the wiring for a feature is in one place.                                                                            |
+| `observability/` | Loggers for now. Metrics and tracing can go here later.                                                                      | Log names and fields stay the same everywhere.                                                                           |
+| `shared/`        | Data types, response helpers, and the error catalog.                                                                         | Every layer needs these, so they can't live in any one layer.                                                            |
 
 A repository has two parts: an interface that lists the methods services can call, and a class that does the real work, such as running SQL. Services only know about the interface. Repositories never make business decisions.
 
-The `items` feature is an example that uses every layer. Replace it or delete it when you build your own features. To add a feature, follow `docs/adding-a-feature.md`.
+The `items` feature is an example that uses every layer. It uses the `webhooks` integration. Replace it or delete it when you build your own features. To add a feature, follow `docs/adding-a-feature.md`.
 
 A feature only needs the layers it uses. `healthcheck` has a route and a handler, but no schema, service, or repository, because it has no input, no logic, and no data.
 
@@ -62,19 +65,22 @@ A feature only needs the layers it uses. `healthcheck` has a route and a handler
 Imports only go one way, down the list:
 
 ```text
-routes    -> schemas, handlers
-handlers  -> schemas (types only), services through request.server
-services  -> data, observability
-data      -> (nothing but shared)
-schemas   -> (nothing but shared)
-everything -> shared
+routes       -> schemas, handlers
+handlers     -> schemas (types only), services through request.server
+services     -> data, integrations, observability (never other services)
+data         -> (nothing but shared)
+integrations -> (nothing but shared)
+schemas      -> (nothing but shared)
+everything   -> shared
 ```
 
-`plugins/` is the one place that imports repositories, loggers, and services together, because its job is to connect them.
+`plugins/` is the one place that imports repositories, integrations, loggers, and services together, because its job is to connect them.
 
 These rules keep each layer easy to change without breaking the ones above it. Lint enforces the important ones:
 
-- Routes and handlers can't import from `data/`. Only services use repositories.
+- Routes and handlers can't import from `data/` or `integrations/`. Only services use them.
+- Services can't import other services.
+- Repositories and integrations can only import from `shared/`.
 - Handlers can't import from `routes/`.
 - Schemas can't import from any other layer.
 
@@ -135,11 +141,36 @@ Query strings and URL params are always strings. Use `z.coerce.number()` when yo
 
 Routes do not check their responses yet. To add that, put a schema under `schema.response`. If a response does not match it, the client gets a 500 error.
 
+## Integrations
+
+An integration wraps one outside system that a service needs, such as the OpenAI API, an email provider, or a payment provider. Use `data/` for storing and reading data, and `integrations/` for everything else outside the app.
+
+An integration works like a repository. It has two parts: an interface that lists the methods services can call, and a class that does the real work. Services only know about the interface.
+
+- It gets its settings, like a URL or API key, in its constructor. The plugin reads them from `config`.
+- The plugin builds it and passes it to each service that needs it.
+- It is never attached to Fastify, so handlers can't call it.
+- It throws when the call fails, and makes no business decisions. The service decides what a failure means.
+
+`webhooks` is the working example. `WebhookHttpClient` POSTs events to `WEBHOOK_URL`. `ItemService` sends `item.created` after it saves an item. If the webhook fails, the item is already saved, so the service logs `item.webhook.failed` and still returns the item:
+
+```ts
+// plugins/item.ts
+const webhookClient = new WebhookHttpClient(config.WEBHOOK_URL);
+const itemService = new ItemService(itemRepository, webhookClient, new ItemLogger(fastify.log));
+```
+
+Service tests mock the interface with `jest.fn()`, the same way as a repository. The client's own test mocks `fetch`, so no real calls are made.
+
+## Services never use each other
+
+A service never imports another service. If two services need the same thing, put it in a repository or integration, and give it to both. This keeps services free of import loops, and keeps each service's tests small.
+
 ## Plugins
 
-Plugins create each feature's objects when the app starts and attach them to the Fastify app. For example, `itemPlugin` creates `ItemLogger` and `ItemPostgresRepository`, passes them to `ItemService`, and attaches only `itemService`.
+Plugins create each feature's objects when the app starts and attach them to the Fastify app. For example, `itemPlugin` creates `ItemPostgresRepository`, `WebhookHttpClient`, and `ItemLogger`, passes them to `ItemService`, and attaches only `itemService`.
 
-Only services use repositories. Routes and handlers never touch them, and lint fails if they try to import from `src/data`. If a service needs another feature's data, the plugin passes it that feature's repository too.
+Only services use repositories. Routes and handlers never touch them, and lint fails if they try to import from `src/data`. If a service needs another feature's data, the plugin passes it that feature's repository too. The same goes for integrations.
 
 Each plugin also tells TypeScript about these new fields (with `declare module 'fastify'`). It lists the plugins it needs (with `fp(..., { dependencies })`), so the app fails at startup if they are loaded in the wrong order.
 
@@ -221,7 +252,7 @@ Table definitions are SQL files in `db/schema/`. `000_schema.sql` creates the Po
 
 Each test file sits next to the file it tests and ends in `.test.ts`. Shared test fakes end in `.test-helper.ts`. Neither is included in the production build.
 
-- Service tests replace the repository with a Jest mock, so they need no database.
+- Service tests replace repositories and integrations with Jest mocks, so they need no database.
 - Route tests build the app with `setupApp()` and send requests with `app.inject()`. They check input validation, error responses, request IDs, and Swagger, all without a database.
 
 For building, releases, and deployment, see `README.md` and `infrastructure/README.md`.

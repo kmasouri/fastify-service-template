@@ -15,4 +15,11 @@ export class ItemLogger {
   onItemFetched(): void {
     currentLogger(this.logger).info({ event: 'item.fetched' }, 'item fetched');
   }
+
+  onItemWebhookFailed(error: unknown): void {
+    currentLogger(this.logger).warn(
+      { event: 'item.webhook.failed', err: error },
+      'item webhook failed'
+    );
+  }
 }

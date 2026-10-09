@@ -1,4 +1,5 @@
 import { ItemRepository } from '../../data';
+import { WebhookClient } from '../../integrations';
 import { ItemLogger } from '../../observability';
 import { Item } from '../../shared/types';
 import { ItemService } from './item.service';
@@ -13,11 +14,18 @@ function mockRepository(): jest.Mocked<ItemRepository> {
   };
 }
 
+function mockWebhookClient(): jest.Mocked<WebhookClient> {
+  return {
+    send: jest.fn().mockResolvedValue(undefined)
+  };
+}
+
 function mockLogger(): jest.Mocked<ItemLogger> {
   return {
     onItemCreated: jest.fn(),
     onItemListed: jest.fn(),
-    onItemFetched: jest.fn()
+    onItemFetched: jest.fn(),
+    onItemWebhookFailed: jest.fn()
   } as unknown as jest.Mocked<ItemLogger>;
 }
 
@@ -36,7 +44,7 @@ describe('ItemService', () => {
     const logger = mockLogger();
     repository.getByName.mockResolvedValue(null);
     repository.create.mockResolvedValue(widget);
-    const service = new ItemService(repository, logger);
+    const service = new ItemService(repository, mockWebhookClient(), logger);
 
     const item = await service.createItem({ name: 'Widget' });
 
@@ -49,11 +57,37 @@ describe('ItemService', () => {
     expect(logger.onItemCreated).toHaveBeenCalledTimes(1);
   });
 
+  it('sends an item.created webhook', async () => {
+    const repository = mockRepository();
+    const webhookClient = mockWebhookClient();
+    repository.getByName.mockResolvedValue(null);
+    repository.create.mockResolvedValue(widget);
+    const service = new ItemService(repository, webhookClient, mockLogger());
+
+    await service.createItem({ name: 'Widget' });
+
+    expect(webhookClient.send).toHaveBeenCalledWith({ event: 'item.created', data: widget });
+  });
+
+  it('still returns the item when the webhook fails', async () => {
+    const repository = mockRepository();
+    const webhookClient = mockWebhookClient();
+    const logger = mockLogger();
+    const failure = new Error('Webhook returned status 500');
+    repository.getByName.mockResolvedValue(null);
+    repository.create.mockResolvedValue(widget);
+    webhookClient.send.mockRejectedValue(failure);
+    const service = new ItemService(repository, webhookClient, logger);
+
+    await expect(service.createItem({ name: 'Widget' })).resolves.toBe(widget);
+    expect(logger.onItemWebhookFailed).toHaveBeenCalledWith(failure);
+  });
+
   it('rejects an item name that is already taken', async () => {
     const repository = mockRepository();
     const logger = mockLogger();
     repository.getByName.mockResolvedValue(widget);
-    const service = new ItemService(repository, logger);
+    const service = new ItemService(repository, mockWebhookClient(), logger);
 
     await expect(service.createItem({ name: 'WIDGET' })).rejects.toMatchObject({
       name: 'itemNameTaken',
@@ -70,7 +104,7 @@ describe('ItemService', () => {
     const logger = mockLogger();
     repository.list.mockResolvedValue([widget]);
     repository.count.mockResolvedValue(3);
-    const service = new ItemService(repository, logger);
+    const service = new ItemService(repository, mockWebhookClient(), logger);
 
     const result = await service.listItems({ limit: 2, offset: 1 });
 
@@ -82,7 +116,7 @@ describe('ItemService', () => {
     const repository = mockRepository();
     const logger = mockLogger();
     repository.getById.mockResolvedValue(widget);
-    const service = new ItemService(repository, logger);
+    const service = new ItemService(repository, mockWebhookClient(), logger);
 
     await expect(service.getItem(widget.id)).resolves.toBe(widget);
   });
@@ -91,7 +125,7 @@ describe('ItemService', () => {
     const repository = mockRepository();
     const logger = mockLogger();
     repository.getById.mockResolvedValue(null);
-    const service = new ItemService(repository, logger);
+    const service = new ItemService(repository, mockWebhookClient(), logger);
 
     await expect(service.getItem(widget.id)).rejects.toMatchObject({
       name: 'itemNotFound',

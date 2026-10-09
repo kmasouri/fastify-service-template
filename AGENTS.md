@@ -24,24 +24,27 @@ Run `npm run check` before you finish any change. Never call work done while it 
 
 ## Layers
 
-A request goes `routes -> handlers -> services -> repositories`. Each layer only calls the one right below it. Routes and handlers both use `src/schemas/`, which imports nothing from the other layers.
+A request goes `routes -> handlers -> services -> repositories`. Services can also call integrations, which are outside systems like another company's API. Each layer only calls the one right below it. Routes and handlers both use `src/schemas/`, which imports nothing from the other layers.
 
 Put new code in the folder for its layer, then in a folder for its feature. The full folder map, who can import what, and why, are in the "Where things live" and "Who can import what" sections of `docs/architecture.md`. Lint enforces the import rules; don't turn them off.
 
-| Layer      | Folder                       | Does                                                                           | Never                                                   |
-| ---------- | ---------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Route      | `src/routes/<feature>/`      | URL, method, which schema and handler to use, Swagger `description` and `tags` | Contain logic                                           |
-| Schema     | `src/schemas/<feature>/`     | Zod schemas for request input, and their types                                 | Import from any layer but `shared`                      |
-| Handler    | `src/handlers/<feature>/`    | Read the request, call one service, send the response                          | Make business decisions, use a repository, catch errors |
-| Service    | `src/services/<feature>/`    | Business logic, logging, throwing errors                                       | Use Fastify request or reply objects                    |
-| Repository | `src/data/<feature>/`        | Read and write data (SQL, cache, other stores)                                 | Make business decisions                                 |
-| Plugin     | `src/plugins/<feature>.ts`   | Build the repository, logger, and service at startup                           | Attach anything but the service to Fastify              |
-| Logger     | `src/observability/loggers/` | One method per event, called by services                                       | Be called from handlers or repositories                 |
-| Shared     | `src/shared/`                | Types, response helpers, the error catalog                                     | Import from any other layer                             |
+| Layer       | Folder                        | Does                                                                           | Never                                                        |
+| ----------- | ----------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Route       | `src/routes/<feature>/`       | URL, method, which schema and handler to use, Swagger `description` and `tags` | Contain logic                                                |
+| Schema      | `src/schemas/<feature>/`      | Zod schemas for request input, and their types                                 | Import from any layer but `shared`                           |
+| Handler     | `src/handlers/<feature>/`     | Read the request, call one service, send the response                          | Make business decisions, use a repository, catch errors      |
+| Service     | `src/services/<feature>/`     | Business logic, logging, throwing errors                                       | Use Fastify request or reply objects, import another service |
+| Repository  | `src/data/<feature>/`         | Read and write data (SQL, cache, other stores)                                 | Make business decisions                                      |
+| Integration | `src/integrations/<feature>/` | Call an outside system (APIs, LLMs, email, payments, anything else)            | Make business decisions                                      |
+| Plugin      | `src/plugins/<feature>.ts`    | Build the repositories, integrations, logger, and service at startup           | Attach anything but the service to Fastify                   |
+| Logger      | `src/observability/loggers/`  | One method per event, called by services                                       | Be called from handlers, repositories, or integrations       |
+| Shared      | `src/shared/`                 | Types, response helpers, the error catalog                                     | Import from any other layer                                  |
 
 ## Hard rules
 
 - **Only services use repositories.** A plugin builds the repository and passes it to the service's constructor. Never attach a repository to Fastify, and never use one in a route or handler. Lint fails if a route or handler imports from `src/data`. If a service needs another feature's data, give it that feature's repository in its constructor.
+- **Only services use integrations.** An integration wraps one outside system, like the OpenAI API. It goes in `src/integrations/<feature>/`, not in `src/data`, and follows the same rules as a repository: the plugin builds it and passes it to the service's constructor. Settings like API keys are passed into its constructor too; the plugin reads them from `config`. Never attach it to Fastify. Lint fails if a route or handler imports from `src/integrations`.
+- **Services never import other services.** If two services need the same thing, put it in a repository or integration and give it to both. Lint enforces this, so services never import each other in a loop.
 - **Handlers get services from `request.server`**, like `request.server.itemService`. Never import a service class into a handler.
 - **Zod is the only way to check input.** Schemas go in `src/schemas/<feature>/<feature>.schemas.ts`, with the `z.infer` type right below each one. Routes use the schemas, and handlers use the types. Never import from `src/routes` in a handler. Never write a request type by hand, and never write raw JSON Schema.
 - **Request bodies use `z.strictObject`**, so unknown fields are rejected.
@@ -53,7 +56,7 @@ Put new code in the folder for its layer, then in a folder for its feature. The 
 - **SQL uses parameters** (`$1`, `$2`), never values pasted into the query string. Tables live in the Postgres schema from `db/schema/000_schema.sql`. Each new table gets a new numbered file in `db/schema/`.
 - **Every environment variable** goes in the Zod schema in `src/config.ts`, in the table in `README.md`, and in `.env.example`. Read settings only from the exported `config` object.
 - **Import from the layer's root `index.ts`**, like `from '../../data'`, not from a feature folder inside it. Every feature folder has an `index.ts`, and the layer's root `index.ts` re-exports it.
-- **Tests sit next to the file they test** and end in `.test.ts`. Service tests mock the repository with `jest.fn()`. Route tests use `app.inject`. Tests never need a database.
+- **Tests sit next to the file they test** and end in `.test.ts`. Service tests mock repositories and integrations with `jest.fn()`. Route tests use `app.inject`. Tests never need a database.
 - **Write docs and comments in plain language.** Short sentences, everyday words.
 
 ## Naming
@@ -65,6 +68,8 @@ src/handlers/<feature>/<feature>.ts                     -> <action><Thing>Handle
 src/services/<feature>/<domain>.service.ts              -> <Domain>Service
 src/data/<feature>/<domain>.repository.ts               -> <Domain>Repository (interface)
 src/data/<feature>/<domain>-postgres.repository.ts      -> <Domain>PostgresRepository
+src/integrations/<feature>/<name>.client.ts            -> <Name>Client (interface)
+src/integrations/<feature>/<name>-<how>.client.ts      -> <Name><How>Client, like WebhookHttpClient
 src/observability/loggers/<feature>/<domain>.logger.ts  -> <Domain>Logger
 src/plugins/<domain>.ts                                 -> default export fp(<domain>Plugin, { name: '<domain>' })
 ```

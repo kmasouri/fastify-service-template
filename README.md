@@ -4,7 +4,7 @@ A starting point for a Fastify and TypeScript API. It comes with Postgres, input
 
 ## What you get
 
-- **Clear layers:** `routes -> handlers -> services -> repositories`, with a working example feature called `items`.
+- **Clear layers:** `routes -> handlers -> services -> repositories`, plus `integrations` for outside systems, with a working example feature called `items`.
 - **Zod schemas:** one schema per request checks the input, types the handler, and feeds the Swagger docs.
 - **Checked settings:** a bad environment variable stops the app at startup, with a clear message.
 - **Consistent API:** every response is `{ data }`, `{ data, page }`, or `{ error }`. Every error has its own documented code. Every request gets an ID.
@@ -68,6 +68,7 @@ The app checks all of these at startup, in `src/config.ts`.
 | `DATABASE_PASSWORD` | `fastify_service_template` | Password, if `DATABASE_URL` isn't set.                                    |
 | `LOGGER_LEVEL`      | `info`                     | How much to log. Tests use `silent`.                                      |
 | `REQUEST_ID_HEADER` | `x-request-id`             | Header that carries the request ID, in and out.                           |
+| `WEBHOOK_URL`       |                            | Where to send events like `item.created`. If not set, webhooks are off.   |
 
 ## Commands
 

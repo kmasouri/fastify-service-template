@@ -97,6 +97,10 @@ constructor(
 ) {}
 ```
 
+Never import another service, like `ItemService`. Lint blocks it. Use the other feature's repository instead.
+
+If the service calls an outside system, like an email provider or the OpenAI API, add an integration in `src/integrations/<feature>/` and pass it in the same way. See "Integrations" in `docs/architecture.md`.
+
 Add `index.ts`, and export it from `src/services/index.ts`. Add `order.service.test.ts` with the repositories and logger mocked. See `item.service.test.ts`.
 
 ## 7. Plugin

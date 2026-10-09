@@ -22,5 +22,6 @@ describe('parseEnv', () => {
   it('fails fast with the variable name when a value is invalid', () => {
     expect(() => parseEnv({ PORT: 'abc' })).toThrow(/PORT/);
     expect(() => parseEnv({ LOGGER_LEVEL: 'loud' })).toThrow(/LOGGER_LEVEL/);
+    expect(() => parseEnv({ WEBHOOK_URL: 'not a url' })).toThrow(/WEBHOOK_URL/);
   });
 });

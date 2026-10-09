@@ -29,7 +29,8 @@ const envSchema = z.object({
   LOGGER_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
-  REQUEST_ID_HEADER: z.string().min(1).default('x-request-id')
+  REQUEST_ID_HEADER: z.string().min(1).default('x-request-id'),
+  WEBHOOK_URL: z.url().optional()
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -51,7 +52,8 @@ export const config = {
   PORT: env.PORT,
   DATABASE: getDatabaseConfig(env),
   LOGGER_LEVEL: env.LOGGER_LEVEL,
-  REQUEST_ID_HEADER: env.REQUEST_ID_HEADER
+  REQUEST_ID_HEADER: env.REQUEST_ID_HEADER,
+  WEBHOOK_URL: env.WEBHOOK_URL
 };
 
 function getDatabaseConfig(env: Env) {

@@ -1,4 +1,5 @@
 import { ItemRepository } from '../../data';
+import { WebhookClient } from '../../integrations';
 import { ItemLogger } from '../../observability';
 import { AppError } from '../../shared/errors';
 import { Item } from '../../shared/types';
@@ -6,6 +7,7 @@ import { Item } from '../../shared/types';
 export class ItemService {
   constructor(
     private readonly itemRepository: ItemRepository,
+    private readonly webhookClient: WebhookClient,
     private readonly itemLogger: ItemLogger
   ) {}
 
@@ -25,6 +27,7 @@ export class ItemService {
       metadata: input.metadata ?? {}
     });
     this.itemLogger.onItemCreated();
+    await this.sendItemCreatedWebhook(item);
     return item;
   }
 
@@ -48,5 +51,14 @@ export class ItemService {
 
     this.itemLogger.onItemFetched();
     return item;
+  }
+
+  // The item is already saved, so a failed webhook doesn't fail the request. Log it instead.
+  private async sendItemCreatedWebhook(item: Item): Promise<void> {
+    try {
+      await this.webhookClient.send({ event: 'item.created', data: item });
+    } catch (error) {
+      this.itemLogger.onItemWebhookFailed(error);
+    }
   }
 }

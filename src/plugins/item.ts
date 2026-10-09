@@ -1,6 +1,8 @@
 import { FastifyPluginAsync } from 'fastify';
 import fp from 'fastify-plugin';
+import { config } from '../config';
 import { ItemPostgresRepository } from '../data';
+import { WebhookHttpClient } from '../integrations';
 import { ItemLogger } from '../observability';
 import { ItemService } from '../services';
 
@@ -10,11 +12,12 @@ declare module 'fastify' {
   }
 }
 
-// Builds the item service with its repository and logger. Only the service is attached to
-// Fastify: repositories are used by services and nothing else.
+// Builds the item service with its repository, webhook client, and logger. Only the service is
+// attached to Fastify: repositories and integrations are used by services and nothing else.
 const itemPlugin: FastifyPluginAsync = async (fastify) => {
   const itemRepository = new ItemPostgresRepository(fastify.pg);
-  const itemService = new ItemService(itemRepository, new ItemLogger(fastify.log));
+  const webhookClient = new WebhookHttpClient(config.WEBHOOK_URL);
+  const itemService = new ItemService(itemRepository, webhookClient, new ItemLogger(fastify.log));
 
   fastify.decorate('itemService', itemService);
 };
